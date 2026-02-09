@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Category Visibility Map</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #0f172a; }
+        .custom-scrollbar::-webkit-scrollbar { height: 8px; width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .factor-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .factor-card:hover { transform: translateY(-3px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+
+        /* --- BADGE STYLES (Light BG / Dark Text) --- */
+        .rank-badge-1 { background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .rank-badge-2 { background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .rank-badge-3 { background-color: #fef9c3; color: #854d0e; border: 1px solid #fde047; }
+        .rank-badge-4 { background-color: #fef9c3; color: #854d0e; border: 1px solid #fde047; }
+        .rank-badge-5 { background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .rank-badge-none { background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        /* Tooltip Styles */
+        .tooltip-container { position: relative; display: inline-flex; align-items: center; cursor: help; }
+        /* Position tooltip below the text */
+        .tooltip-text { visibility: hidden; width: 200px; background-color: #1e293b; color: #fff; text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 50; top: 130%; left: 50%; margin-left: -100px; opacity: 0; transition: opacity 0.3s; font-size: 11px; font-weight: normal; line-height: 1.4; pointer-events: none; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; }
+        .tooltip-text::after { content: ""; position: absolute; bottom: 100%; left: 50%; margin-left: -5px; border-width: 5px; border-style: solid; border-color: transparent transparent #1e293b transparent; }
+
+        [x-cloak] { display: none !important; }
+        .prose p { margin-bottom: 0.5em; }
+        .prose ul { list-style-type: disc; padding-left: 1.25em; margin-bottom: 0.5em; }
+
+        /* Brand highlight (ChatGPT-style) */
+        .brand-highlight {
+            background-color: #fef08a; /* yellow-200 */
+            color: #0f172a; /* slate-900 */
+            border: 1px solid #fde047; /* yellow-300 */
+            padding: 0.02rem 0.35rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .brand-highlight:before { content: "@"; opacity: 0.65; margin-right: 0.15rem; }
+
+    </style>
+    <script>
+        // Python injects the fully calculated object here.
+        // NOTE: We keep the original structure exactly to ensure Python injection works.
+        var reportData = /* JSON_PAYLOAD_HERE */ { project: {}, baseline: { brands: [], sourceStats: [] }, factors: [] }; // DATA_INJECTION_POINT
+
+        window.snapshotApp = function() {
+            return {
+                isDrawerOpen: false,
+                isSourceDetailOpen: false,
+                isRankDetailOpen: false,
+                showLegend: true,
+
+                isChatOpen: false,
+                chatModalTitle: '',
+                chatModalPrompt: '',
+                chatModalContent: '',
+                chatModalBrands: [],
+
+                selectedCard: { mentions: [], sourceStats: [] },
+                selectedSourceType: { items: [] },
+                selectedBrandDetail: { citations: [] },
+
+                activeTab: 'rankings',
+                drawerActiveTab: 'rankings',
+
+                // Bind Data directly with defaults
+                project: reportData.project || { name: 'Loading...', prompt: '' },
+                baseline: reportData.baseline || { brands: [], sourceStats: [] },
+                factors: reportData.factors || [],
+
+                // Computed Stats for the Dashboard (SAFE MODE ADDED)
+                // Inside snapshotApp() return object...
+                get dashboardStats() {
+                   // Check if Python sent us the pre-calculated stats
+                  if (this.baseline && reportData.dashboard) {
+                return reportData.dashboard;
+                                             }
+                    // Fallback just in case
+                 return { wins: 0, scenarios: 0, winRate: 0, topThreatName: 'None', topThreatCount: 0 };
+                        },
+
+                // [NEW] Helper to open chat modal
+                openChatModal(title, prompt, content, brands) {
+                    this.chatModalTitle = title || '';
+                    this.chatModalPrompt = prompt || '';
+                    this.chatModalContent = content || "No transcript available.";
+                    this.chatModalBrands = Array.isArray(brands) ? brands.filter(Boolean) : [];
+                    this.isChatOpen = true;
+                },
+
+                // [NEW] Highlight brand mentions in rendered HTML (safe DOM text-node replace)
+                highlightBrands(htmlStr, brands) {
+                    const list = (brands || []).map(s => String(s).trim()).filter(Boolean);
+                    if (!htmlStr || list.length === 0) return htmlStr;
+
+                    // De-dupe + prefer longer names first (avoids partial matches)
+                    const uniq = Array.from(new Set(list));
+                    uniq.sort((a, b) => b.length - a.length);
+
+                    // Escape regex specials
+                    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const alternation = uniq.map(esc).join('|');
+
+                    // Boundary-aware regex (unicode letters+numbers). Captures prefix separator to preserve it.
+                    const re = new RegExp('(^|[^\\p{L}\\p{N}])(' + alternation + ')(?=[^\\p{L}\\p{N}]|$)', 'giu');
+                    const reTest = new RegExp(re.source, re.flags.replace('g',''));
+
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString('<div>' + htmlStr + '</div>', 'text/html');
+                    const container = doc.body.firstChild;
+
+                    const skipTags = new Set(['A','SCRIPT','STYLE','CODE','PRE','TEXTAREA']);
+
+                    const walker = doc.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+                        acceptNode(node) {
+                            const val = node.nodeValue;
+                            if (!val || !val.trim()) return NodeFilter.FILTER_REJECT;
+                            const p = node.parentNode;
+                            if (p && p.tagName && skipTags.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+                            return reTest.test(val) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                        }
+                    });
+
+                    const nodes = [];
+                    while (walker.nextNode()) nodes.push(walker.currentNode);
+
+                    for (const node of nodes) {
+                        const text = node.nodeValue;
+                        re.lastIndex = 0;
+                        let match;
+                        let last = 0;
+                        const frag = doc.createDocumentFragment();
+
+                        while ((match = re.exec(text)) !== null) {
+                            const prefix = match[1] || '';
+                            const brand = match[2] || '';
+                            const start = match.index;
+                            const brandStart = start + prefix.length;
+                            const brandEnd = brandStart + brand.length;
+
+                            frag.appendChild(doc.createTextNode(text.slice(last, brandStart)));
+
+                            const mark = doc.createElement('mark');
+                            mark.className = 'brand-highlight';
+                            mark.textContent = brand;
+                            frag.appendChild(mark);
+
+                            last = brandEnd;
+                        }
+                        frag.appendChild(doc.createTextNode(text.slice(last)));
+
+                        node.parentNode.replaceChild(frag, node);
+                    }
+
+                    return container.innerHTML;
+                },
+
+                // [NEW] Render transcript content that may be markdown, raw HTML, or HTML-escaped
+                renderTranscript(raw, brands) {
+                    let txt = raw || '';
+                    // Detect HTML-escaped payloads (common when content was stored with entities)
+                    if (txt.includes('&lt;') && txt.includes('&gt;')) {
+                        const el = document.createElement('textarea');
+                        el.innerHTML = txt;
+                        txt = el.value;
+                    }
+
+                    let htmlOut = '';
+                    // If it already looks like HTML, use as-is
+                    if (/<\s*(p|div|h\d|ul|ol|li|a|strong|em|hr|br)\b/i.test(txt)) {
+                        htmlOut = txt;
+                    } else {
+                        // Otherwise treat as markdown
+                        htmlOut = marked.parse(txt);
+                    }
+
+                    // Highlight brands (if provided)
+                    const list = Array.isArray(brands) ? brands : (this.chatModalBrands || []);
+                    return this.highlightBrands(htmlOut, list);
+                }, // <--- ADD THIS CLOSING BRACE AND COMMA
+
+                openDrawer(card) {
+                    this.selectedCard = card;
+                    if(!this.selectedCard.mentions) this.selectedCard.mentions = [];
+                    if(!this.selectedCard.sourceStats) this.selectedCard.sourceStats = [];
+                    this.drawerActiveTab = 'rankings';
+                    this.isDrawerOpen = true;
+                },
+                openSourceDetails(sourceType) {
+                    this.selectedSourceType = sourceType;
+                    if(!this.selectedSourceType.items) this.selectedSourceType.items = [];
+                    this.isSourceDetailOpen = true;
+                },
+                openRankDetails(brand) {
+                    this.selectedBrandDetail = brand;
+                    if(!this.selectedBrandDetail.citations) this.selectedBrandDetail.citations = [];
+                    this.isRankDetailOpen = true;
+                },
+
+                // Helpers
+                getRankColorClass(rank) {
+                    if (!rank) return 'rank-badge-none';
+                    if (rank === 1) return 'rank-badge-1';
+                    if (rank === 2) return 'rank-badge-2';
+                    if (rank <= 5) return 'rank-badge-3';
+                    return 'rank-badge-5';
+                },
+                getSentimentClass(sentiment) {
+                    if (sentiment >= 0.7) return 'bg-green-100 text-green-700 border-green-200';
+                    if (sentiment >= 0.4) return 'bg-yellow-50 text-yellow-700 border-yellow-200';
+                    return 'bg-red-50 text-red-700 border-red-100';
+                },
+                getTypeClass(type) {
+                    const map = { 'Homepage': 'bg-gray-100 text-gray-700', 'Product/Feature Overview': 'bg-indigo-50 text-indigo-700', 'Pricing / Plans': 'bg-green-50 text-green-700', 'Blog / Educational content': 'bg-blue-50 text-blue-700', 'Review / Directory listing': 'bg-orange-50 text-orange-700', 'Comparison Pages / Alternative': 'bg-purple-50 text-purple-700' };
+                    return map[type] || 'bg-slate-50 text-slate-600';
+                },
+                // Check if target brand is missing from a source list (Content Gap)
+                isContentGap(brandsList) {
+                    // Safety check to prevent crash if project name isn't loaded
+                    if(!brandsList || !this.project || !this.project.name) return false;
+
+                    const pName = this.project.name.toLowerCase();
+                    return !brandsList.some(b => b.toLowerCase().includes(pName));
+                }
+            };
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-slate-50 min-h-screen" x-data="snapshotApp()" x-cloak>
+
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-white"
+     style="transition: opacity 0.5s ease-out;"
+     x-data="{ loaded: false }"
+     x-init="setTimeout(() => loaded = true, 500)"
+     x-show="!loaded"
+     x-transition:leave="opacity-0">
+    <div class="flex flex-col items-center gap-3">
+        <div class="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-slate-500 text-sm font-medium">Generating Snapshot...</p>
+    </div>
+</div>
+
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-8 h-8 bg-orange-500 rounded-lg flex items-center justify-center text-white font-bold shadow-sm" x-text="project.name ? project.name[0] : 'R'"></div>
+                <h1 class="text-lg font-bold text-slate-800">AI Category Visibility Map <span class="text-slate-400 font-normal ml-2" x-text="'| ' + project.name"></span></h1>
+            </div>
+            <div class="flex items-center gap-4 text-sm">
+                <div class="text-slate-500" x-text="'Report Date: ' + new Date().toLocaleDateString()"></div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+        <div x-show="showLegend" x-transition class="bg-blue-50 border border-blue-100 rounded-lg p-4 relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div class="text-sm text-blue-800">
+                <span class="font-bold flex items-center gap-2 mb-1"><i class="fas fa-info-circle"></i> How to read this report:</span>
+                <div class="flex flex-wrap gap-4 mt-1 opacity-90">
+                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-green-500"></span> Green = Top 2 Rank (Win)</span>
+                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-yellow-400"></span> Yellow = Rank 3-5 (Contender)</span>
+                    <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-red-400"></span> Red = Rank 6+ or Unranked (Loss)</span>
+                </div>
+            </div>
+            <button @click="showLegend = false" class="text-blue-400 hover:text-blue-600 text-xs font-semibold uppercase tracking-wide">Dismiss</button>
+        </div>
+
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex items-center justify-between relative overflow-hidden">
+                <div class="relative z-10">
+                    <div class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Segment Win Rate</div>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-4xl font-extrabold text-slate-800" x-text="dashboardStats.wins"></span>
+                        <span class="text-lg text-slate-400 font-medium" x-text="'/ ' + dashboardStats.scenarios"></span>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-2">You ranked in the top 3 in <span class="font-bold text-slate-700" x-text="dashboardStats.winRate + '%'"></span> of segments.</p>
+                </div>
+                <div class="w-16 h-16 bg-orange-50 rounded-full flex items-center justify-center text-orange-500 text-2xl">
+                    <i class="fas fa-trophy"></i>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex items-center justify-between relative overflow-hidden">
+                <div class="relative z-10">
+                    <div class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Primary Threat</div>
+                    <div class="text-2xl font-bold text-slate-800" x-text="dashboardStats.topThreatName"></div>
+                    <p class="text-xs text-slate-500 mt-2">Outranked you in <span class="font-bold text-red-600" x-text="dashboardStats.topThreatCount"></span> segments.</p>
+                </div>
+                <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center text-red-500 text-2xl">
+                    <i class="fas fa-crosshairs"></i>
+                </div>
+            </div>
+        </section>
+
+        <section class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div class="bg-slate-900 px-6 py-8 text-white relative">
+                <div class="relative z-10">
+                    <div class="flex items-center gap-2 text-orange-400 text-xs font-bold tracking-wider uppercase mb-3">
+                        <i class="fas fa-chart-pie"></i> AI Category Visibility Map
+                    </div>
+
+                   <div class="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4">
+            <h2 class="text-xl md:text-3xl font-bold leading-tight text-white" x-text="'&quot;' + project.prompt + '&quot;'"></h2>
+
+            <button @click="openChatModal('Baseline Chat', project.prompt, project.full_chat, (baseline.brands || []).map(b => b.name))"
+                    x-show="project.full_chat"
+                    class="flex-shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors border border-slate-700">
+                <i class="far fa-file-alt"></i> View Full Chat
+            </button>
+        </div>
+
+                    <p class="text-slate-400 text-sm mb-6 max-w-2xl">
+                        Baseline answer to the generic category prompt. The sections below break this down using the AI’s follow-up qualifiers (the “it depends…” questions) and segments within each.
+                    </p>
+
+                    <div class="flex flex-wrap items-center gap-3">
+                        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300">
+                            <i class="fas fa-globe-europe text-blue-400"></i>
+                            <span x-text="project.country || 'Global'"></span>
+                        </div>
+                        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300">
+                            <i class="fas fa-robot text-purple-400"></i>
+                            <span x-text="project.model || 'AI Model'"></span>
+                        </div>
+                        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300">
+                            <i class="far fa-calendar-alt text-slate-400"></i>
+                            <span x-text="new Date().toLocaleDateString()"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-6 border-b border-slate-200 bg-slate-50/50">
+                <div class="flex gap-6">
+                    <button @click="activeTab = 'rankings'" class="py-4 text-sm font-medium border-b-2 transition-colors" :class="activeTab === 'rankings' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'">Rankings</button>
+                    <button @click="activeTab = 'sources'" class="py-4 text-sm font-medium border-b-2 transition-colors" :class="activeTab === 'sources' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'">Sources</button>
+                </div>
+            </div>
+
+            <div x-show="activeTab === 'rankings'" class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50 text-xs uppercase text-slate-500">
+                        <tr>
+                            <th class="px-6 py-3">
+                                <span class="tooltip-container">
+                                    Rank <i class="fas fa-question-circle text-[10px] text-slate-300 ml-1"></i>
+                                    <span class="tooltip-text">The order in which the AI listed the brand. 1 is best.</span>
+                                </span>
+                            </th>
+                            <th class="px-4 py-3">Brand</th>
+                            <th class="px-4 py-3">
+                                <span class="tooltip-container">
+                                    Sentiment <i class="fas fa-question-circle text-[10px] text-slate-300 ml-1"></i>
+                                    <span class="tooltip-text">How positive the AI's description was (0-100%).</span>
+                                </span>
+                            </th>
+                            <th class="px-4 py-3">
+                                <span class="tooltip-container">
+                                    Links <i class="fas fa-question-circle text-[10px] text-slate-300 ml-1"></i>
+                                    <span class="tooltip-text">Direct citations provided by the AI response.</span>
+                                </span>
+                            </th>
+                            <th class="px-4 py-3">Snippet</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <template x-for="brand in baseline.brands" :key="brand.name">
+                            <tr class="hover:bg-slate-50 cursor-pointer" :class="brand.isTarget ? 'bg-orange-50/30' : ''" @click="openRankDetails(brand)">
+                                <td class="px-6 py-4 text-center"><span class="w-8 h-8 flex items-center justify-center rounded-full text-xs font-bold border" :class="getRankColorClass(brand.rank)" x-text="brand.rank || '-'"></span></td>
+                                <td class="px-4 py-4"><div class="font-bold text-slate-800" x-text="brand.name"></div><div x-show="brand.isTarget" class="text-[10px] text-orange-600 font-medium">Target</div></td>
+                                <td class="px-4 py-4">
+                                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium border bg-green-100 text-green-700 border-green-200" :class="getSentimentClass(brand.sentiment)">
+                                        <span class="font-bold" x-text="(brand.sentiment * 100).toFixed(0) + '%'"></span></td>
+                                    </span>
+                                <td class="px-4 py-4"><div class="flex flex-wrap gap-1"><template x-for="src in brand.citations"><a :href="src.url" target="_blank" @click.stop class="w-6 h-6 flex items-center justify-center rounded-full bg-slate-100 border hover:bg-indigo-50"><i class="fas fa-link text-[10px]"></i></a></template></div></td>
+                                <td class="px-4 py-4"><div class="text-slate-600 text-xs line-clamp-2 prose prose-sm max-w-none" x-html="marked.parse(brand.snippet || '')"></div></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <div x-show="activeTab === 'sources'" class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-50 text-xs uppercase text-slate-500">
+                        <tr>
+                            <th class="px-6 py-3">Type</th>
+                            <th class="px-4 py-3">Brands</th>
+                            <th class="px-4 py-3">Freq</th>
+                            <th class="px-4 py-3 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        <template x-for="stat in baseline.sourceStats" :key="stat.type">
+                            <tr class="cursor-pointer transition-colors"
+                                :class="isContentGap(stat.brands) ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-slate-50'"
+                                @click="openSourceDetails(stat)">
+                                <td class="px-6 py-4">
+                                    <span class="px-2.5 py-0.5 rounded-full text-xs border" :class="getTypeClass(stat.type)" x-text="stat.type"></span>
+                                    <div x-show="isContentGap(stat.brands)" class="mt-1 text-[10px] font-bold text-red-600 flex items-center gap-1">
+                                        <i class="fas fa-exclamation-triangle"></i> Missing Opportunity
+                                    </div>
+                                </td>
+                                <td class="px-4 py-4"><div class="flex gap-1 flex-wrap"><template x-for="b in stat.brands"><span class="px-2 py-0.5 rounded text-[10px] border bg-slate-100" :class="b === project.name ? 'border-orange-300 bg-orange-50 font-bold' : ''" x-text="b"></span></template></div></td>
+                                <td class="px-4 py-4"><div class="flex items-center gap-2"><div class="w-24 h-2 bg-slate-100 rounded-full"><div class="h-full bg-indigo-500 rounded-full" :style="`width: ${stat.percentage}%`"></div></div><span class="text-xs font-bold" x-text="stat.percentage + '%'"></span></div></td>
+                                <td class="px-4 py-4 text-right"><span class="text-xs font-medium text-indigo-600">View</span></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+<section class="space-y-8">
+  <div class="border-b border-slate-200 pb-4">
+    <div class="flex items-center gap-2">
+      <h3 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+        <i class="fas fa-sliders-h text-slate-400"></i> Follow-up Qualifiers
+      </h3>
+
+      <span class="tooltip-container">
+        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-slate-100 text-slate-700 border-slate-200">
+          AI-derived
+        </span>
+        <span class="tooltip-text">
+          These follow-up qualifiers come from the AI’s own “it depends…” questions at the end of the baseline answer.
+        </span>
+      </span>
+    </div>
+
+    <p class="text-slate-500 text-sm mt-1">
+      Each row is a follow-up qualifier (e.g., team size, budget, existing tools). Each card is a segment within that qualifier.
+    </p>
+  </div>
+
+  <template x-for="factor in factors" :key="factor.id">
+    ...
+  </template>
+</section>
+
+
+            <template x-for="factor in factors" :key="factor.id">
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm p-1 mt-6 first:mt-0">
+
+
+                    <div class="px-5 py-3 border-b bg-slate-50/50 rounded-t-xl flex justify-between items-center">
+                        <div class="flex items-center gap-2">
+  <h4 class="text-sm font-bold text-slate-800" x-text="factor.title"></h4>
+
+  <span class="tooltip-container">
+    <i class="fas fa-question-circle text-[12px] text-slate-300"></i>
+    <span class="tooltip-text">
+  This is a follow-up qualifier pulled from the baseline answer. The cards below are the segments generated for it.
+    </span>
+  </span>
+</div>
+
+                    </div>
+                    <div class="flex gap-4 overflow-x-auto p-5 custom-scrollbar pb-6">
+                        <template x-for="value in factor.values" :key="value.id">
+                            <div @click="openDrawer(value)" class="factor-card flex-shrink-0 w-64 bg-white border rounded-lg p-4 cursor-pointer relative flex flex-col justify-between">
+                                <div>
+                                    <div class="absolute top-0 left-0 w-full h-1 rounded-t-lg" :class="getRankColorClass(value.rank)"></div>
+                                    <h5 class="font-bold text-slate-800 text-sm mb-1 mt-2" x-text="value.name"></h5>
+                                    <p class="text-[10px] text-slate-500 line-clamp-2 leading-snug mb-3" x-text="value.desc"></p>
+                                </div>
+                                <div class="bg-slate-50 rounded border border-slate-100 p-2">
+                                    <div class="space-y-1.5">
+                                        <template x-for="mention in value.mentions.slice(0,3)" :key="mention.name">
+                                            <div class="flex justify-between items-center text-[10px]">
+                                                <div class="flex items-center gap-1.5 overflow-hidden">
+                                                    <span class="w-4 h-4 flex items-center justify-center rounded-full text-[9px] font-bold" :class="getRankColorClass(mention.rank)" x-text="mention.rank"></span>
+                                                    <span class="truncate font-medium text-slate-700" x-text="mention.name"></span>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </template>
+        </section>
+
+        <div x-show="isRankDetailOpen" class="relative z-[60]" x-cloak>
+            <div class="fixed inset-0 bg-slate-900/75 backdrop-blur-sm" @click="isRankDetailOpen = false"></div>
+            <div class="fixed inset-0 z-10 overflow-y-auto p-4 flex items-center justify-center"
+       @click.self="isRankDetailOpen = false">
+                <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">
+                    <div class="flex justify-between items-start border-b pb-4 mb-4">
+                        <h3 class="text-xl font-bold" x-text="selectedBrandDetail.name"></h3>
+                        <button @click="isRankDetailOpen = false"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="bg-slate-50 p-4 rounded border text-sm text-slate-700 prose prose-sm max-w-none" x-html="marked.parse(selectedBrandDetail.snippet || '')"></div>
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-500 uppercase mb-2">Sources</h4>
+                            <div class="space-y-2">
+                                <template x-for="src in selectedBrandDetail.citations">
+                                    <div class="flex items-center gap-2 text-sm"><i class="fas fa-link text-slate-400"></i><a :href="src.url" target="_blank" class="text-blue-600 hover:underline truncate" x-text="src.url"></a></div>
+                                </template>
+                                <div x-show="!selectedBrandDetail.citations || selectedBrandDetail.citations.length === 0" class="text-xs text-slate-400 italic">No sources.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div x-show="isSourceDetailOpen" class="relative z-[60]" x-cloak>
+            <div class="fixed inset-0 bg-slate-900/75 backdrop-blur-sm" @click="isSourceDetailOpen = false"></div>
+            <div class="fixed inset-0 z-10 overflow-y-auto p-4 flex items-center justify-center" @click.self="isSourceDetailOpen = false">
+                <div class="relative bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-y-auto" @click.away="isSourceDetailOpen = false">
+                    <div class="px-6 py-4 border-b flex justify-between items-center">
+                        <h3 class="text-lg font-bold" x-text="selectedSourceType.type"></h3>
+                        <button @click="isSourceDetailOpen = false"><i class="fas fa-times text-slate-400"></i></button>
+                    </div>
+                    <div class="p-6">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-slate-50 text-xs uppercase"><tr><th class="px-4 py-2">Brand</th><th class="px-4 py-2">URL</th><th class="px-4 py-2">Context</th></tr></thead>
+                            <tbody class="divide-y">
+                                <template x-for="item in selectedSourceType.items">
+                                    <tr>
+                                        <td class="px-4 py-3 font-bold" x-text="item.brand"></td>
+                                        <td class="px-4 py-3"><a :href="item.url" target="_blank" class="text-blue-600 hover:underline truncate block w-48" x-text="item.url"></a></td>
+                                        <td class="px-4 py-3 text-slate-600 text-xs italic"><div class="prose prose-sm max-w-none" x-html="marked.parse(item.snippet || '')"></div></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div x-show="isDrawerOpen" class="relative z-50" x-cloak>
+            <div class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm" @click="isDrawerOpen = false"></div>
+            <div class="fixed inset-0 overflow-hidden pointer-events-none">
+                <div class="absolute inset-0 overflow-hidden"><div class="pointer-events-auto fixed inset-y-0 right-0 flex max-w-full pl-10">
+                    <div x-show="isDrawerOpen" x-transition:enter="transform transition ease-in-out duration-500 sm:duration-700" x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0" class="w-screen max-w-4xl">
+                        <div class="flex h-full flex-col overflow-y-scroll bg-white shadow-xl">
+                            <div class="bg-slate-900 px-8 py-8 text-white relative">
+                                <h2 class="text-2xl font-bold leading-tight mb-1" x-text="selectedCard.name"></h2>
+
+                                <div class="flex flex-col sm:flex-row sm:items-center gap-3 mt-2 mb-2">
+                                    <p class="text-s font-medium leading-tight opacity-80" x-text="selectedCard.desc"></p>
+                                    <button @click.stop="openChatModal(selectedCard.name, selectedCard.desc, selectedCard.full_chat, (selectedCard.mentions || []).map(m => m.name))"
+                                            x-show="selectedCard.full_chat"
+                                            class="inline-flex items-center gap-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-orange-400 font-bold uppercase tracking-wide border border-slate-700 transition-colors self-start sm:self-auto">
+                                        <i class="far fa-file-alt"></i> View Full Chat
+                                    </button>
+                                </div>
+
+                                <button class="absolute top-8 right-8 text-slate-400 hover:text-white" @click="isDrawerOpen = false"><i class="fas fa-times fa-lg"></i></button>
+                            </div>
+                            <div class="px-8 border-b border-slate-200 bg-white sticky top-0 z-10">
+                                <div class="flex gap-8">
+                                    <button @click="drawerActiveTab = 'rankings'" class="py-4 text-sm font-medium border-b-2 transition-colors" :class="drawerActiveTab === 'rankings' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'">Rankings</button>
+                                    <button @click="drawerActiveTab = 'sources'" class="py-4 text-sm font-medium border-b-2 transition-colors" :class="drawerActiveTab === 'sources' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'">Sources</button>
+                                    </div>
+                            </div>
+                            <div class="p-8">
+                                <div x-show="drawerActiveTab === 'rankings'" class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                    <table class="w-full text-left border-collapse">
+                                        <thead><tr class="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-200"><th class="px-6 py-3 font-semibold w-16 text-center">Rank</th><th class="px-6 py-3 font-semibold w-48">Brand</th><th class="px-6 py-3 font-semibold w-28">Sentiment</th><th class="px-6 py-3 font-semibold w-32">Links</th><th class="px-6 py-3 font-semibold">Snippet</th></tr></thead>
+                                        <tbody class="divide-y divide-slate-100 text-sm">
+                                            <template x-for="mention in selectedCard.mentions" :key="mention.name">
+                                                <tr class="hover:bg-slate-50">
+                                                    <td class="px-6 py-4 text-center"><span class="w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold border" :class="getRankColorClass(mention.rank)" x-text="mention.rank"></span></td>
+                                                    <td class="px-6 py-4 font-bold text-slate-800" x-text="mention.name"></td>
+                                                    <td class="px-6 py-4"><span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium border" :class="getSentimentClass(mention.sentiment)"><span x-text="(mention.sentiment * 100).toFixed(0) + '%'"></span></span></td>
+                                                    <td class="px-6 py-4"><div class="flex flex-wrap gap-1.5"><template x-for="cite in (mention.citations || mention.sources || [])"><a :href="cite.url || cite" target="_blank" class="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-slate-100 border hover:bg-indigo-50"><i class="fas fa-link mr-1"></i>Link</a></template></div></td>
+                                                    <td class="px-6 py-4 text-slate-600 text-xs"><div class="prose prose-sm max-w-none" x-html="marked.parse(mention.text || '')"></div></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div x-show="drawerActiveTab === 'sources'" class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                                    <table class="w-full text-left border-collapse">
+                                        <thead><tr class="bg-slate-50 text-xs text-slate-500 uppercase tracking-wider border-b border-slate-200"><th class="px-6 py-3 font-semibold w-40">Page Type</th><th class="px-6 py-3 font-semibold w-64">Brands Mentioned</th><th class="px-6 py-3 font-semibold">Frequency</th><th class="px-6 py-3 font-semibold text-right">Action</th></tr></thead>
+                                        <tbody class="divide-y divide-slate-100 text-sm">
+                                            <template x-if="selectedCard.sourceStats && selectedCard.sourceStats.length > 0">
+                                                <template x-for="stat in selectedCard.sourceStats" :key="stat.type">
+                                                    <tr class="hover:bg-slate-50 cursor-pointer" @click="openSourceDetails(stat)">
+                                                        <td class="px-6 py-4 font-medium"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs border" :class="getTypeClass(stat.type)" x-text="stat.type"></span></td>
+                                                        <td class="px-6 py-4"><div class="flex flex-wrap gap-1"><template x-for="brand in stat.brands"><span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border" :class="brand === project.name ? 'bg-orange-100 border-orange-200' : 'bg-slate-100 border-slate-200'"><span x-text="brand"></span></span></template></div></td>
+                                                        <td class="px-6 py-4"><div class="flex items-center gap-3"><div class="flex-1 bg-slate-100 rounded-full h-2 max-w-xs"><div class="bg-indigo-500 h-full rounded-full" :style="`width: ${stat.percentage}%`"></div></div><span class="text-xs font-bold" x-text="stat.percentage + '%'"></span></div></td>
+                                                        <td class="px-6 py-4 text-right"><span class="text-xs font-medium text-indigo-600">View Details</span></td>
+                                                    </tr>
+                                                </template>
+                                            </template>
+                                            <template x-if="!selectedCard.sourceStats || selectedCard.sourceStats.length === 0">
+                                                <tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 italic">No source data available for this segment.</td></tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+        <div x-show="isChatOpen" class="relative z-[70]" x-cloak>
+        <div class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm" @click="isChatOpen = false"></div>
+        <div class="fixed inset-0 z-10 overflow-y-auto p-4 flex items-center justify-center" @click.self="isChatOpen = false">
+            <div class="relative bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] flex flex-col">
+                <div class="px-6 py-4 border-b flex justify-between items-center bg-slate-50 rounded-t-xl">
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-800">Raw AI Transcript</h3>
+                        <p class="text-xs text-slate-500" x-text="chatModalTitle"></p>
+                    </div>
+                    <button @click="isChatOpen = false" class="text-slate-400 hover:text-slate-600 transition-colors">
+                        <i class="fas fa-times fa-lg"></i>
+                    </button>
+                </div>
+                <div class="p-6 md:p-8 overflow-y-auto custom-scrollbar bg-slate-50">
+                    <div class="space-y-6">
+
+                        <!-- Prompt (User) -->
+                        <div class="flex justify-end">
+                            <div class="max-w-[90%] sm:max-w-[75%]">
+                                <div class="flex justify-end items-end gap-2">
+                                    <div class="rounded-2xl rounded-br-md bg-slate-900 text-white px-4 py-3 shadow-sm">
+                                        <div class="text-[10px] uppercase tracking-wider text-slate-300 mb-1">Prompt</div>
+                                        <div class="text-sm leading-relaxed" x-text="chatModalPrompt"></div>
+                                    </div>
+                                    <div class="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-700 text-[10px] font-bold">You</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Response (Assistant) -->
+                        <div class="flex justify-start">
+                            <div class="max-w-[90%] sm:max-w-[75%] w-full">
+                                <div class="flex items-start gap-2">
+                                    <div class="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white text-[10px] font-bold">AI</div>
+                                    <div class="rounded-2xl rounded-bl-md bg-white border border-slate-200 px-4 py-3 shadow-sm w-full">
+                                        <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Assistant</div>
+                                        <div class="prose prose-sm max-w-none text-slate-800" x-html="renderTranscript(chatModalContent, chatModalBrands)"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    </main>
+    <!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "205636b8dcc247a7ad4c417dd2414e45"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>
